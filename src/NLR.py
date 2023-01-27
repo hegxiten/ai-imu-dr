@@ -7,10 +7,11 @@ import time
 import os
 from NLR_utils import prepare_data, generate_normalize_u_p
 from NLR_utils_plot import results_filter
+from NLR_train_torch_filter import train_filter
 
 def launch(args):
-    # if args.train_filter:
-    #     train_filter(args, dataset)
+    if args.train_filter:
+        train_filter(args)
 
     if args.test_filter:
         test_filter(args)
@@ -86,7 +87,7 @@ class KITTIArgs():
     path_temp = "../temp"
     file_normalize_factor = "normalize_factors.p"
 
-    # epochs = 400
+    epochs = 400
     # seq_dim = 6000
 
     # # training, cross-validation and test dataset
@@ -95,10 +96,10 @@ class KITTIArgs():
     continue_training = False
 
     # # choose what to do
-    read_data = 0
-    train_filter = 0
-    test_filter = 1
-    results_filter = 1
+    # read_data = 0
+    train_filter = 1
+    test_filter = 0
+    results_filter = 0
     # dataset_class = KITTIDataset
     parameter_class = KITTIParameters
 

@@ -108,7 +108,9 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         self.cov0_measurement = torch.Tensor([self.cov_lat, self.cov_up]).double()
 
     def run(self, t, u,  measurements_covs, v0, N, pose0):
-        dt = t[1:] - t[:-1]  # (s)
+        dt = t[1:] - t[:-1]  # (s)`
+        if N is None:
+            N = u.shape[0]
         Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P = self.init_run(dt, v0, N, pose0)
 
         for i in range(1, N):
@@ -228,7 +230,8 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
     @staticmethod
     def state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R):
         S = H.mm(P).mm(H.t()) + R
-        Kt, _ = torch.gesv(P.mm(H.t()).t(), S)
+        # Kt, _ = torch.gesv(P.mm(H.t()).t(), S)
+        Kt = torch.linalg.solve(S, P.mm(H.t()).t())
         K = Kt.t()
         dx = K.mv(r.view(-1))
 
