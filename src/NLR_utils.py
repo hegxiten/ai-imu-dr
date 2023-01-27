@@ -1,24 +1,35 @@
 import pickle
 import numpy as np
 import os
+import torch
 
-def prepare_data():
+def prepare_data(for_torch=False):
     with open('t.p', 'rb') as f:
         t = pickle.load(f)
     with open('u.p', 'rb') as f:
         u = pickle.load(f)
     u[:,3:]*=9.80655
-    ## TODO: get gps locations for p
+    ## get gps locations for p
     with open('gps.p', 'rb') as f:
         gps = pickle.load(f)
     p = gps[:,-3:]
-    # p = np.zeros((len(t), 3))
+    t_p = gps[:, 0]/1000
+    ## get closest t to t_p, return indices
+    i_t = [0] * len(t_p)
+    for i in range(len(t_p)):
+        i_t[i] = np.searchsorted(t, t_p[i])
 
     pose0 = np.zeros(3)
     v0 = np.zeros(3)
-    
-    
-    return t, pose0, p, v0, u
+
+    if for_torch == True:
+        t = torch.from_numpy(t).double()
+        pose0 = torch.from_numpy(pose0).double()
+        p = torch.from_numpy(p).double()
+        v0 = torch.from_numpy(v0).double()
+        u = torch.from_numpy(u).double()
+
+    return t, pose0, p, v0, u, i_t
 
 def umeyama_alignment(x, y, with_scale=False):
     """
