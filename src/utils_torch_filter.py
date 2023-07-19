@@ -4,16 +4,19 @@ import numpy as np
 import os
 import time
 from termcolor import cprint
+
 from utils_numpy_filter import NUMPYIEKF
 from utils import prepare_data
+
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 class InitProcessCovNet(torch.nn.Module):
 
         def __init__(self):
             super(InitProcessCovNet, self).__init__()
 
-            self.beta_process = 3*torch.ones(2).double()
-            self.beta_initialization = 3*torch.ones(2).double()
+            self.beta_process = 3*torch.ones(2, device=DEVICE).double()
+            self.beta_initialization = 3*torch.ones(2, device=DEVICE).double()
 
             self.factor_initial_covariance = torch.nn.Linear(1, 6, bias=False).double()
             """parameters for initializing covariance"""
@@ -28,12 +31,12 @@ class InitProcessCovNet(torch.nn.Module):
             return
 
         def init_cov(self, iekf):
-            alpha = self.factor_initial_covariance(torch.ones(1).double()).squeeze()
+            alpha = self.factor_initial_covariance(torch.ones(1, device=DEVICE).double()).squeeze()
             beta = 10**(self.tanh(alpha))
             return beta
 
         def init_processcov(self, iekf):
-            alpha = self.factor_process_covariance(torch.ones(1).double())
+            alpha = self.factor_process_covariance(torch.ones(1, device=DEVICE).double())
             beta = 10**(self.tanh(alpha))
             return beta
 
@@ -41,7 +44,7 @@ class InitProcessCovNet(torch.nn.Module):
 class MesNet(torch.nn.Module):
         def __init__(self):
             super(MesNet, self).__init__()
-            self.beta_measurement = 3*torch.ones(2).double()
+            self.beta_measurement = 3*torch.ones(2, device=DEVICE).double()
             self.tanh = torch.nn.Tanh()
 
             self.cov_net = torch.nn.Sequential(torch.nn.Conv1d(6, 32, 5),
@@ -53,10 +56,12 @@ class MesNet(torch.nn.Module):
                        torch.nn.ReLU(),
                        torch.nn.Dropout(p=0.5),
                        ).double()
+            self.cov_net = self.cov_net.to(DEVICE)
             "CNN for measurement covariance"
             self.cov_lin = torch.nn.Sequential(torch.nn.Linear(32, 2),
                                               torch.nn.Tanh(),
                                               ).double()
+            self.cov_lin = self.cov_lin.to(DEVICE)
             self.cov_lin[0].bias.data[:] /= 100
             self.cov_lin[0].weight.data[:] /= 100
 
@@ -69,11 +74,11 @@ class MesNet(torch.nn.Module):
 
 
 class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
-    Id1 = torch.eye(1).double()
-    Id2 = torch.eye(2).double()
-    Id3 = torch.eye(3).double()
-    Id6 = torch.eye(6).double()
-    IdP = torch.eye(21).double()
+    Id1 = torch.eye(1, device=DEVICE).double()
+    Id2 = torch.eye(2, device=DEVICE).double()
+    Id3 = torch.eye(3, device=DEVICE).double()
+    Id6 = torch.eye(6, device=DEVICE).double()
+    IdP = torch.eye(21, device=DEVICE).double()
 
     def __init__(self, parameter_class=None):
         torch.nn.Module.__init__(self)
@@ -83,11 +88,13 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         self.u_loc = None
         self.u_std = None
         self.initprocesscov_net = InitProcessCovNet()
+        self.initprocesscov_net = self.initprocesscov_net.to(DEVICE)
         self.mes_net = MesNet()
+        self.mes_net = self.mes_net.to(DEVICE)
         self.cov0_measurement = None
 
         # modified parameters
-        self.IdP = torch.eye(self.P_dim).double()
+        self.IdP = torch.eye(self.P_dim, device=DEVICE).double()
 
         if parameter_class is not None:
             self.filter_parameters = parameter_class()
@@ -100,14 +107,17 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         for attr in attr_list:
             setattr(self, attr, getattr(self.filter_parameters, attr))
 
-        self.Q = torch.diag(torch.Tensor([self.cov_omega, self.cov_omega, self. cov_omega,
-                                           self.cov_acc, self.cov_acc, self.cov_acc,
-                                           self.cov_b_omega, self.cov_b_omega, self.cov_b_omega,
-                                           self.cov_b_acc, self.cov_b_acc, self.cov_b_acc,
-                                           self.cov_Rot_c_i, self.cov_Rot_c_i, self.cov_Rot_c_i,
-                                           self.cov_t_c_i, self.cov_t_c_i, self.cov_t_c_i])
-                            ).double()
-        self.cov0_measurement = torch.Tensor([self.cov_lat, self.cov_up]).double()
+        self.Q = torch.diag(
+            torch.tensor([
+                self.cov_omega,     self.cov_omega,     self. cov_omega,
+                self.cov_acc,       self.cov_acc,       self.cov_acc,
+                self.cov_b_omega,   self.cov_b_omega,   self.cov_b_omega,
+                self.cov_b_acc,     self.cov_b_acc,     self.cov_b_acc,
+                self.cov_Rot_c_i,   self.cov_Rot_c_i,   self.cov_Rot_c_i,
+                self.cov_t_c_i,     self.cov_t_c_i,     self.cov_t_c_i
+            ], device=DEVICE)
+        ).double()
+        self.cov0_measurement = torch.tensor([self.cov_lat, self.cov_up], device=DEVICE).double()
 
     def run(self, t, u,  measurements_covs, v_mes, p_mes, N, ang0):
 
@@ -135,7 +145,7 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
     def init_covariance(self):
         beta = self.initprocesscov_net.init_cov(self)
-        P = torch.zeros(self.P_dim, self.P_dim).double()
+        P = torch.zeros(self.P_dim, self.P_dim, device=DEVICE).double()
         P[:2, :2] = self.cov_Rot0*beta[0]*self.Id2  # no yaw error
         P[3:5, 3:5] = self.cov_v0*beta[1]*self.Id2
         P[9:12, 9:12] = self.cov_b_omega0*beta[2]*self.Id3
@@ -146,14 +156,14 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
 
     def init_saved_state(self, dt, N, ang0):
-        Rot = dt.new_zeros(N, 3, 3)
-        v = dt.new_zeros(N, 3)
-        p = dt.new_zeros(N, 3)
-        b_omega = dt.new_zeros(N, 3)
-        b_acc = dt.new_zeros(N, 3)
-        Rot_c_i = dt.new_zeros(N, 3, 3)
-        t_c_i = dt.new_zeros(N, 3)
-        Rot_c_i[0] = torch.eye(3).double()
+        Rot = dt.new_zeros(N, 3, 3, device=DEVICE)
+        v = dt.new_zeros(N, 3, device=DEVICE)
+        p = dt.new_zeros(N, 3, device=DEVICE)
+        b_omega = dt.new_zeros(N, 3, device=DEVICE)
+        b_acc = dt.new_zeros(N, 3, device=DEVICE)
+        Rot_c_i = dt.new_zeros(N, 3, 3, device=DEVICE)
+        t_c_i = dt.new_zeros(N, 3, device=DEVICE)
+        Rot_c_i[0] = torch.eye(3, device=DEVICE).double()
         return Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i
 
     def propagate(self, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, Rot_c_i_prev, t_c_i_prev,
@@ -179,8 +189,8 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
     def propagate_cov(self, P, Rot_prev, v_prev, p_prev, b_omega_prev, b_acc_prev, u,
                       dt):
 
-        F = P.new_zeros(self.P_dim, self.P_dim)
-        G = P.new_zeros(self.P_dim, self.Q.shape[0])
+        F = P.new_zeros(self.P_dim, self.P_dim, device=DEVICE)
+        G = P.new_zeros(self.P_dim, self.Q.shape[0], device=DEVICE)
         Q = self.Q.clone()
         F[3:6, :3] = self.skew(self.g)
         F[6:9, 3:6] = self.Id3
@@ -220,7 +230,7 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         H_v_imu = Rot_c_i.t().mm(self.skew(v_imu))
         H_t_c_i = self.skew(t_c_i)
 
-        H = P.new_zeros(2, self.P_dim)
+        H = P.new_zeros(2, self.P_dim, device=DEVICE)
         H[:, 3:6] = Rot_body.t()[1:]
         H[:, 15:18] = H_v_imu[1:]
         H[:, 9:12] = H_t_c_i[1:]
@@ -236,7 +246,7 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
     @staticmethod
     def state_and_cov_update(Rot, v, p, b_omega, b_acc, Rot_c_i, t_c_i, P, H, r, R):
         S = H.mm(P).mm(H.t()) + R
-        Kt, _ = torch.gesv(P.mm(H.t()).t(), S)
+        Kt = torch.linalg.solve(S, P.mm(H.t()).t())
         K = Kt.t()
         dx = K.mv(r.view(-1))
 
@@ -261,9 +271,11 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
     @staticmethod
     def skew(x):
-        X = torch.Tensor([[0, -x[2], x[1]],
-                          [x[2], 0, -x[0]],
-                          [-x[1], x[0], 0]]).double()
+        X = torch.tensor([
+            [0, -x[2], x[1]],
+            [x[2], 0, -x[0]],
+            [-x[1], x[0], 0]
+        ], device=DEVICE).double()
         return X
 
     @staticmethod
@@ -285,16 +297,20 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
         # Near |phi|==0, use first order Taylor expansion
         if isclose(angle, 0.):
-            skew_phi = torch.Tensor([[0, -phi[2], phi[1]],
-                          [phi[2], 0, -phi[0]],
-                          [-phi[1], phi[0], 0]]).double()
+            skew_phi = torch.tensor([
+                [0, -phi[2], phi[1]],
+                [phi[2], 0, -phi[0]],
+                [-phi[1], phi[0], 0]
+            ], device=DEVICE).double()
             J = TORCHIEKF.Id3 + 0.5 * skew_phi
             Rot = TORCHIEKF.Id3 + skew_phi
         else:
             axis = phi / angle
-            skew_axis = torch.Tensor([[0, -axis[2], axis[1]],
-                              [axis[2], 0, -axis[0]],
-                              [-axis[1], axis[0], 0]]).double()
+            skew_axis = torch.tensor([
+                [0, -axis[2], axis[1]],
+                [axis[2], 0, -axis[0]],
+                [-axis[1], axis[0], 0]
+            ], device=DEVICE).double()
             s = torch.sin(angle)
             c = torch.cos(angle)
 
@@ -312,15 +328,19 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
         # Near phi==0, use first order Taylor expansion
         if isclose(angle, 0.):
-            skew_phi = torch.Tensor([[0, -phi[2], phi[1]],
-                          [phi[2], 0, -phi[0]],
-                          [-phi[1], phi[0], 0]]).double()
+            skew_phi = torch.tensor([
+                [0, -phi[2], phi[1]],
+                [phi[2], 0, -phi[0]],
+                [-phi[1], phi[0], 0]
+            ], device=DEVICE).double()
             Xi = TORCHIEKF.Id3 + skew_phi
             return Xi
         axis = phi / angle
-        skew_axis = torch.Tensor([[0, -axis[2], axis[1]],
-                          [axis[2], 0, -axis[0]],
-                          [-axis[1], axis[0], 0]]).double()
+        skew_axis = torch.tensor([
+            [0, -axis[2], axis[1]],
+            [axis[2], 0, -axis[0]],
+            [-axis[1], axis[0], 0]
+        ], device=DEVICE).double()
         c = angle.cos()
         s = angle.sin()
         Xi = c * TORCHIEKF.Id3 + (1 - c) * TORCHIEKF.outer(axis, axis) \
@@ -338,15 +358,19 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
         # Near |phi|==0, use first order Taylor expansion
         if isclose(angle, 0.):
-            skew_phi = torch.Tensor([[0, -phi[2], phi[1]],
-                          [phi[2], 0, -phi[0]],
-                          [-phi[1], phi[0], 0]]).double()
+            skew_phi = torch.tensor([
+                [0, -phi[2], phi[1]],
+                [phi[2], 0, -phi[0]],
+                [-phi[1], phi[0], 0]
+            ], device=DEVICE).double()
             return TORCHIEKF.Id3 + 0.5 * skew_phi
 
         axis = phi / angle
-        skew_axis = torch.Tensor([[0, -axis[2], axis[1]],
-                          [axis[2], 0, -axis[0]],
-                          [-axis[1], axis[0], 0]]).double()
+        skew_axis = torch.tensor([
+            [0, -axis[2], axis[1]],
+            [axis[2], 0, -axis[0]],
+            [-axis[1], axis[0], 0]
+        ], device=DEVICE).double()
         s = torch.sin(angle)
         c = torch.cos(angle)
 
@@ -360,10 +384,10 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         pitch = torch.atan2(-Rot[2, 0], torch.sqrt(Rot[0, 0]**2 + Rot[1, 0]**2))
 
         if isclose(pitch, np.pi / 2.):
-            yaw = pitch.new_zeros(1)
+            yaw = pitch.new_zeros(1, device=DEVICE)
             roll = torch.atan2(Rot[0, 1], Rot[1, 1])
         elif isclose(pitch, -np.pi / 2.):
-            yaw = pitch.new_zeros(1)
+            yaw = pitch.new_zeros(1, device=DEVICE)
             roll = -torch.atan2(Rot[0, 1],  Rot[1, 1])
         else:
             sec_pitch = 1. / pitch.cos()
@@ -416,7 +440,7 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
 
         # pytorch SVD seems to be inaccurate, so just move to numpy immediately
         U, _, V = torch.svd(rot)
-        S = torch.eye(3).double()
+        S = torch.eye(3, device=DEVICE).double()
         S[2, 2] = torch.det(U) * torch.det(V)
         return U.mm(S).mm(V.t())
 
@@ -439,16 +463,19 @@ class TORCHIEKF(torch.nn.Module, NUMPYIEKF):
         :return:
         """
 
-        self.Q = torch.diag(torch.Tensor([self.cov_omega, self.cov_omega, self. cov_omega,
-                                           self.cov_acc, self.cov_acc, self.cov_acc,
-                                           self.cov_b_omega, self.cov_b_omega, self.cov_b_omega,
-                                           self.cov_b_acc, self.cov_b_acc, self.cov_b_acc,
-                                           self.cov_Rot_c_i, self.cov_Rot_c_i, self.cov_Rot_c_i,
-                                           self.cov_t_c_i, self.cov_t_c_i, self.cov_t_c_i])
-                            ).double()
+        self.Q = torch.diag(
+            torch.tensor([
+                self.cov_omega,     self.cov_omega,     self. cov_omega,
+                self.cov_acc,       self.cov_acc,       self.cov_acc,
+                self.cov_b_omega,   self.cov_b_omega,   self.cov_b_omega,
+                self.cov_b_acc,     self.cov_b_acc,     self.cov_b_acc,
+                self.cov_Rot_c_i,   self.cov_Rot_c_i,   self.cov_Rot_c_i,
+                self.cov_t_c_i,     self.cov_t_c_i,     self.cov_t_c_i
+            ], device=DEVICE)
+        ).double()
 
         beta = self.initprocesscov_net.init_processcov(self)
-        self.Q = torch.zeros(self.Q.shape[0], self.Q.shape[0]).double()
+        self.Q = torch.zeros(self.Q.shape[0], self.Q.shape[0], device=DEVICE).double()
         self.Q[:3, :3] = self.cov_omega*beta[0]*self.Id3
         self.Q[3:6, 3:6] = self.cov_acc*beta[1]*self.Id3
         self.Q[6:9, 6:9] = self.cov_b_omega*beta[2]*self.Id3
@@ -475,12 +502,13 @@ def prepare_filter(args, dataset):
     torch_iekf = TORCHIEKF()
     torch_iekf.load(args, dataset)
     torch_iekf = TORCHIEKF()
+    torch_iekf = torch_iekf.to(DEVICE)
 
     # set dataset parameter
     torch_iekf.filter_parameters = args.parameter_class()
     torch_iekf.set_param_attr()
     if type(torch_iekf.g).__module__ == np.__name__:
-        torch_iekf.g = torch.from_numpy(torch_iekf.g).double()
+        torch_iekf.g = torch.tensor(torch_iekf.g, device=DEVICE).double()
 
     # load model
     torch_iekf.load(args, dataset)
