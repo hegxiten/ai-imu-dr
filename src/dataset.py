@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import os
 from collections import OrderedDict
 
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 class BaseDataset(Dataset):
     pickle_extension = ".p"
@@ -83,6 +84,9 @@ class BaseDataset(Dataset):
         # we set factors only if file does not exist
         if os.path.isfile(path_normalize_factor):
             pickle_dict = self.load(path_normalize_factor)
+            for key, value in pickle_dict['normalize_factors'].items():
+                if type(value) == torch.Tensor and value.device == torch.device('cpu'):
+                    pickle_dict['normalize_factors'][key] = value.to(DEVICE)
             self.normalize_factors = pickle_dict['normalize_factors']
             self.num_data = pickle_dict['num_data']
             return
@@ -109,13 +113,18 @@ class BaseDataset(Dataset):
             else:
                 u_std += ((u - u_loc) ** 2).sum(dim=0)
         u_std = (u_std / self.num_data).sqrt()
-
+        print(u_loc, u_std)
+        if u_loc.device == torch.device('cpu'):
+            u_loc = u_loc.to(DEVICE)
+        if u_std.device == torch.device('cpu'):
+            u_std = u_std.to(DEVICE)
         self.normalize_factors = {
             'u_loc': u_loc, 'u_std': u_std,
-            }
+        }
         print('... ended computing normalizing factors')
         pickle_dict = {
-            'normalize_factors': self.normalize_factors, 'num_data': self.num_data}
+            'normalize_factors': self.normalize_factors, 'num_data': self.num_data
+        }
         self.dump(pickle_dict, path_normalize_factor)
 
     def normalize(self, u):
@@ -125,8 +134,8 @@ class BaseDataset(Dataset):
         return u_normalized
 
     def add_noise(self, u):
-        w = torch.randn_like(u[:, :6]) # noise
-        w_b = torch.randn_like(u[0, :6])  # bias
+        w = torch.randn_like(u[:, :6], device=DEVICE)  # noise
+        w_b = torch.randn_like(u[0, :6], device=DEVICE)  # bias
         w[:, :3] *= self.sigma_gyro
         w[:, 3:6] *= self.sigma_acc
         w_b[:3] *= self.sigma_b_gyro
@@ -146,6 +155,9 @@ class BaseDataset(Dataset):
             file_name += cls.pickle_extension
         with open(file_name, "rb") as file_pi:
             pickle_dict = pickle.load(file_pi)
+        for key, value in pickle_dict.items():
+            if type(value) == torch.Tensor and value.device == torch.device('cpu'):
+                pickle_dict[key] = value.to(DEVICE)
         return pickle_dict
 
     @classmethod
@@ -157,10 +169,10 @@ class BaseDataset(Dataset):
             pickle.dump(mondict, file_pi)
 
     def init_state_torch_filter(self, iekf):
-        b_omega0 = torch.zeros(3).double()
-        b_acc0 = torch.zeros(3).double()
-        Rot_c_i0 = torch.eye(3).double()
-        t_c_i0 = torch.zeros(3).double()
+        b_omega0 = torch.zeros(3, device=DEVICE).double()
+        b_acc0 = torch.zeros(3, device=DEVICE).double()
+        Rot_c_i0 = torch.eye(3, device=DEVICE).double()
+        t_c_i0 = torch.zeros(3, device=DEVICE).double()
         return b_omega0, b_acc0, Rot_c_i0, t_c_i0  
 
     def get_estimates(self, dataset_name):

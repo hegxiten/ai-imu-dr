@@ -19,6 +19,9 @@ from train_torch_filter import train_filter
 from utils_plot import results_filter
 
 
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+
 def launch(args):
     if args.read_data:
         args.dataset_class.read_data(args)
@@ -72,8 +75,42 @@ class KITTIDataset(BaseDataset):
                                                                                      'wf, wl, wu, '
                                                                                      '' +
                             'pos_accuracy, vel_accuracy, ' + 'navstat, numsats, ' + 'posmode, '
-                                                                                  'velmode, '
-                                                                                  'orimode')
+                                                                                    'velmode, '
+                                                                                    'orimode')
+
+    ########### Training Materials ########################
+    # lat:   latitude of the oxts-unit (deg)
+    # lon:   longitude of the oxts-unit (deg)
+    # alt:   altitude of the oxts-unit (m)
+    # roll:  roll angle (rad),    0 = level, positive = left side up,      range: -pi   .. +pi
+    # pitch: pitch angle (rad),   0 = level, positive = front down,        range: -pi/2 .. +pi/2
+    # yaw:   heading (rad),       0 = east,  positive = counter clockwise, range: -pi   .. +pi
+    # vn:    velocity towards north (m/s)
+    # ve:    velocity towards east (m/s)
+    # vf:    forward velocity, i.e. parallel to earth-surface (m/s)
+    # vl:    leftward velocity, i.e. parallel to earth-surface (m/s)
+    # vu:    upward velocity, i.e. perpendicular to earth-surface (m/s)
+    # ax:    acceleration in x, i.e. in direction of vehicle front (m/s^2)
+    # ay:    acceleration in y, i.e. in direction of vehicle left (m/s^2)
+    # az:    acceleration in z, i.e. in direction of vehicle top (m/s^2)
+    # af:    forward acceleration (m/s^2)
+    # al:    leftward acceleration (m/s^2)
+    # au:    upward acceleration (m/s^2)
+    # wx:    angular rate around x (rad/s)
+    # wy:    angular rate around y (rad/s)
+    # wz:    angular rate around z (rad/s)
+    # wf:    angular rate around forward axis (rad/s)
+    # wl:    angular rate around leftward axis (rad/s)
+    # wu:    angular rate around upward axis (rad/s)
+    # pos_accuracy:  velocity accuracy (north/east in m)
+    # vel_accuracy:  velocity accuracy (north/east in m/s)
+    # navstat:       navigation status (see navstat_to_string)
+    # numsats:       number of satellites tracked by primary GPS receiver
+    # posmode:       position mode of primary GPS receiver (see gps_mode_to_string)
+    # velmode:       velocity mode of primary GPS receiver (see gps_mode_to_string)
+    # orimode:       orientation mode of primary GPS receiver (see gps_mode_to_string)
+    #
+    ########################################################
 
     # Bundle into an easy-to-access structure
     OxtsData = namedtuple('OxtsData', 'packet, T_w_imu')
@@ -240,23 +277,36 @@ class KITTIDataset(BaseDataset):
                 # take correct imu measurements
                 u = np.concatenate((gyro_bis, acc_bis), -1)
                 # convert from numpy
-                t = torch.from_numpy(t)
-                p_gt = torch.from_numpy(p_gt)
-                v_gt = torch.from_numpy(v_gt)
-                ang_gt = torch.from_numpy(ang_gt)
-                u = torch.from_numpy(u)
+                t = torch.tensor(t, device=DEVICE)
+                p_gt = torch.tensor(p_gt, device=DEVICE)
+                v_gt = torch.tensor(v_gt, device=DEVICE)
+                ang_gt = torch.tensor(ang_gt, device=DEVICE)
+                u = torch.tensor(u, device=DEVICE)
 
                 # convert to float
-                t = t.float()
-                u = u.float()
-                p_gt = p_gt.float()
-                ang_gt = ang_gt.float()
-                v_gt = v_gt.float()
+                # t = t.float()
+                # u = u.float()
+                # p_gt = p_gt.float()
+                # ang_gt = ang_gt.float()
+                # v_gt = v_gt.float()
 
                 mondict = {
                     't': t, 'p_gt': p_gt, 'ang_gt': ang_gt, 'v_gt': v_gt,
                     'u': u, 'name': date_dir2, 't0': t0
-                    }
+                }
+
+                # 'ang_gt': ground truth roll, pitch, yaw. size Nx3
+                # 'name': name of the sequence
+                # 'p_gt': ground truth position. size Nx3
+                # 'sm_gt': ground truth zero velocity and zero angular velocity. size Nx2
+                # 't': time. size N
+                # 't0': initial time
+                # 'u': imu inputs (gyro and accelerometer). size Nx6
+                # 'v_gt': ground truth velocity. size Nx3
+                #####################
+                # zero velocity indicates when the vehicle is stopped. It is a one-hot vector.
+                # Element 1 means the car is stopping and element 0 the car is moving.
+                # It is the same with zero angular velocity but for angular velocity.
 
                 t_tot += t[-1] - t[0]
                 KITTIDataset.dump(mondict, args.path_data_save, date_dir2)
@@ -418,6 +468,7 @@ class KITTIDataset(BaseDataset):
 def test_filter(args, dataset):
     iekf = IEKF()
     torch_iekf = TORCHIEKF()
+    torch_iekf = torch_iekf.to(DEVICE)
 
     # put Kitti parameters
     iekf.filter_parameters = KITTIParameters()
@@ -436,7 +487,7 @@ def test_filter(args, dataset):
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, i,
                                                        to_numpy=True)
         N = None
-        u_t = torch.from_numpy(u).double()
+        u_t = torch.tensor(u, device=DEVICE).double()
         measurements_covs = torch_iekf.forward_nets(u_t)
         measurements_covs = measurements_covs.detach().numpy()
         start_time = time.time()
@@ -450,35 +501,43 @@ def test_filter(args, dataset):
             't': t, 'Rot': Rot, 'v': v, 'p': p, 'b_omega': b_omega, 'b_acc': b_acc,
             'Rot_c_i': Rot_c_i, 't_c_i': t_c_i,
             'measurements_covs': measurements_covs,
-            }
+        }
         dataset.dump(mondict, args.path_results, dataset_name + "_filter.p")
 
 
 class KITTIArgs():
-        path_data_base = "/media/mines/46230797-4d43-4860-9b76-ce35e699ea47/KITTI/raw"
-        path_data_save = "../data"
-        path_results = "../results"
-        path_temp = "../temp"
+    path_data_base = "../../ai-imu-dr-data"
+    path_data_save = "../data"
+    path_results = "../results"
+    path_temp = "../temp"
 
-        epochs = 400
-        seq_dim = 6000
+    epochs = 400
+    seq_dim = 6000
 
-        # training, cross-validation and test dataset
-        cross_validation_sequences = ['2011_09_30_drive_0028_extract']
-        test_sequences = ['2011_09_30_drive_0028_extract']
-        continue_training = True
+    # training, cross-validation and test dataset
+    cross_validation_sequences = ['2011_09_30_drive_0028_extract']
+    test_sequences = ['2011_09_30_drive_0028_extract']
+    continue_training = True
 
-        # choose what to do
-        read_data = 0
-        train_filter = 0
-        test_filter = 1
-        results_filter = 1
-        dataset_class = KITTIDataset
-        parameter_class = KITTIParameters
+    # choose what to do
+    read_data = 1
+    train_filter = 1
+    test_filter = 1
+    results_filter = 1
+    dataset_class = KITTIDataset
+    parameter_class = KITTIParameters
 
 
 if __name__ == '__main__':
     args = KITTIArgs()
     dataset = KITTIDataset(args)
+    # for i in range(0, len(dataset.datasets)):
+    #     dataset_name = dataset.dataset_name(i)
+    #     if dataset_name not in dataset.odometry_benchmark.keys():f
+    #         continue
+    #     print("Test filter on sequence: " + dataset_name)
+    #     t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, i, to_numpy=True)
+    #     print(p_gt[1:100])
+    #     break
     launch(KITTIArgs)
 
