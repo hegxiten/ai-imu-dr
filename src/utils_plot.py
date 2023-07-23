@@ -4,8 +4,11 @@ from termcolor import cprint
 import matplotlib.pyplot as plt
 import numpy as np
 from itertools import chain
+
 from utils import *
 from utils_torch_filter import TORCHIEKF
+
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def results_filter(args, dataset):
 
@@ -38,16 +41,18 @@ def results_filter(args, dataset):
         print("Total sequence time: {:.2f} s".format(t[-1]))
 
         ang = np.zeros((Rot.shape[0], 3))
-        Rot_gt = torch.zeros((Rot.shape[0], 3, 3))
+        Rot_gt = torch.zeros((Rot.shape[0], 3, 3), device=DEVICE)
         for j in range(Rot.shape[0]):
-            roll, pitch, yaw = TORCHIEKF.to_rpy(torch.from_numpy(Rot[j]))
+            roll, pitch, yaw = TORCHIEKF.to_rpy(torch.tensor(Rot[j], device=DEVICE))
             ang[j, 0] = roll.numpy()
             ang[j, 0] = pitch.numpy()
             ang[j, 0] = yaw.numpy()
         # unwrap
-            Rot_gt[j] = TORCHIEKF.from_rpy(torch.Tensor([ang_gt[j, 0]]),
-                                        torch.Tensor([ang_gt[j, 1]]),
-                                        torch.Tensor([ang_gt[j, 2]]))
+            Rot_gt[j] = TORCHIEKF.from_rpy(
+                torch.tensor([ang_gt[j, 0]], device=DEVICE),
+                torch.tensor([ang_gt[j, 1]], device=DEVICE),
+                torch.tensor([ang_gt[j, 2]], device=DEVICE)
+            )
             roll, pitch, yaw = TORCHIEKF.to_rpy(Rot_gt[j])
             ang_gt[j, 0] = roll.numpy()
             ang_gt[j, 0] = pitch.numpy()
@@ -72,14 +77,14 @@ def results_filter(args, dataset):
         rmse_xy = 1 / 2 * np.sqrt(error_p[:, 0] ** 2 + error_p[:, 1] ** 2)
         rmse_z = error_p[:, 2]
 
-        RotT = torch.from_numpy(Rot).float().transpose(-1, -2)
+        RotT = torch.tensor(Rot, device=DEVICE).float().transpose(-1, -2)
 
-        v_r = (RotT.matmul(torch.from_numpy(v).float().unsqueeze(-1)).squeeze()).numpy()
+        v_r = (RotT.matmul(torch.tensor(v, device=DEVICE).float().unsqueeze(-1)).squeeze()).numpy()
         v_r_gt = (Rot_gt.transpose(-1, -2).matmul(
-            torch.from_numpy(v_gt).float().unsqueeze(-1)).squeeze()).numpy()
+            torch.tensor(v_gt, device=DEVICE).float().unsqueeze(-1)).squeeze()).numpy()
 
-        p_r = (RotT.matmul(torch.from_numpy(p).float().unsqueeze(-1)).squeeze()).numpy()
-        p_bis = (Rot_gt.matmul(torch.from_numpy(p_r).float().unsqueeze(-1)).squeeze()).numpy()
+        p_r = (RotT.matmul(torch.tensor(p, device=DEVICE).float().unsqueeze(-1)).squeeze()).numpy()
+        p_bis = (Rot_gt.matmul(torch.tensor(p_r, device=DEVICE).float().unsqueeze(-1)).squeeze()).numpy()
         error_p = p_gt - p_bis
 
         # plot and save plot

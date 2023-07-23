@@ -4,6 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from termcolor import cprint
+
 from utils_torch_filter import TORCHIEKF
 from utils import prepare_data
 import copy
@@ -14,13 +15,16 @@ min_lr = 1e-5
 criterion = torch.nn.MSELoss(reduction="sum")
 lr_initprocesscov_net = 1e-4
 weight_decay_initprocesscov_net = 0e-8
-lr_mesnet = {'cov_net': 1e-4,
+lr_mesnet = {
+    'cov_net': 1e-4,
     'cov_lin': 1e-4,
-    }
-weight_decay_mesnet = {'cov_net': 1e-8,
+}
+weight_decay_mesnet = {
+    'cov_net': 1e-8,
     'cov_lin': 1e-8,
-    }
+}
 
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def compute_delta_p(Rot, p):
     list_rpe = [[], [], []]  # [idx_0, idx_end, pose_delta_p]
@@ -72,12 +76,13 @@ def train_filter(args, dataset):
 
 def prepare_filter(args, dataset):
     iekf = TORCHIEKF()
+    iekf = iekf.to(DEVICE)
 
     # set dataset parameter
     iekf.filter_parameters = args.parameter_class()
     iekf.set_param_attr()
     if type(iekf.g).__module__ == np.__name__:
-        iekf.g = torch.from_numpy(iekf.g).double()
+        iekf.g = torch.tensor(iekf.g, device=DEVICE).double()
 
     # load model
     if args.continue_training:
@@ -105,7 +110,7 @@ def prepare_loss_data(args, dataset):
     for dataset_name, Ns in dataset.datasets_train_filter.items():
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, 0)
         p_gt = p_gt.double()
-        Rot_gt = torch.zeros(Ns[1], 3, 3)
+        Rot_gt = torch.zeros(Ns[1], 3, 3, device=DEVICE)
         for k in range(Ns[1]):
             ang_k = ang_gt[k]
             Rot_gt[k] = TORCHIEKF.from_rpy(ang_k[0], ang_k[1], ang_k[2]).double()
@@ -115,7 +120,7 @@ def prepare_loss_data(args, dataset):
     for dataset_name, Ns in dataset.datasets_validatation_filter.items():
         t, ang_gt, p_gt, v_gt, u = prepare_data(args, dataset, dataset_name, 0)
         p_gt = p_gt.double()
-        Rot_gt = torch.zeros(Ns[1], 3, 3)
+        Rot_gt = torch.zeros(Ns[1], 3, 3, device=DEVICE)
         for k in range(Ns[1]):
             ang_k = ang_gt[k]
             Rot_gt[k] = TORCHIEKF.from_rpy(ang_k[0], ang_k[1], ang_k[2]).double()
@@ -168,9 +173,9 @@ def train_loop(args, dataset, epoch, iekf, optimizer, seq_dim):
 
     if loss_train == 0: 
         return 
-    loss_train.backward()  # loss_train.cuda().backward()  
+    loss_train.backward()
     g_norm = torch.nn.utils.clip_grad_norm_(iekf.parameters(), max_grad_norm)
-    if np.isnan(g_norm) or g_norm > 3*max_grad_norm:
+    if torch.isnan(g_norm) or g_norm > 3*max_grad_norm:
         cprint("gradient norm: {:.5f}".format(g_norm), 'yellow')
         optimizer.zero_grad()
 
@@ -252,13 +257,12 @@ def precompute_lost(Rot, p, list_rpe, N0):
     N = p.shape[0]
     Rot_10_Hz = Rot[::10]
     p_10_Hz = p[::10]
-    idxs_0 = torch.Tensor(list_rpe[0]).clone().long() - int(N0 / 10)
-    idxs_end = torch.Tensor(list_rpe[1]).clone().long() - int(N0 / 10)
-    delta_p_gt = list_rpe[2]
-    idxs = torch.Tensor(idxs_0.shape[0]).byte()
-    idxs[:] = 1
-    idxs[idxs_0 < 0] = 0
-    idxs[idxs_end >= int(N / 10)] = 0
+    idxs_0 = torch.tensor(list_rpe[0], device=DEVICE).clone().long() - int(N0 / 10)
+    idxs_end = torch.tensor(list_rpe[1], device=DEVICE).clone().long() - int(N0 / 10)
+    delta_p_gt = list_rpe[2].clone().detach().to(DEVICE)
+    idxs = torch.ones(idxs_0.shape[0], device=DEVICE, dtype=torch.bool)
+    idxs[idxs_0 < 0] = False
+    idxs[idxs_end >= int(N / 10)] = False
     delta_p_gt = delta_p_gt[idxs]
     idxs_end_bis = idxs_end[idxs]
     idxs_0_bis = idxs_0[idxs]
@@ -266,6 +270,7 @@ def precompute_lost(Rot, p, list_rpe, N0):
         return None, None     
     else:
         delta_p = Rot_10_Hz[idxs_0_bis].transpose(-1, -2).matmul(
-        (p_10_Hz[idxs_end_bis] - p_10_Hz[idxs_0_bis]).unsqueeze(-1)).squeeze()
+            (p_10_Hz[idxs_end_bis] - p_10_Hz[idxs_0_bis]).unsqueeze(-1)
+        ).squeeze()
         distance = delta_p_gt.norm(dim=1).unsqueeze(-1)
         return delta_p.double() / distance.double(), delta_p_gt.double() / distance.double() 
