@@ -173,9 +173,9 @@ def train_loop(args, dataset, epoch, iekf, optimizer, seq_dim):
 
     if loss_train == 0: 
         return 
-    loss_train.backward()  # loss_train.cuda().backward()  
+    loss_train.backward()
     g_norm = torch.nn.utils.clip_grad_norm_(iekf.parameters(), max_grad_norm)
-    if np.isnan(g_norm) or g_norm > 3*max_grad_norm:
+    if torch.isnan(g_norm) or g_norm > 3*max_grad_norm:
         cprint("gradient norm: {:.5f}".format(g_norm), 'yellow')
         optimizer.zero_grad()
 
